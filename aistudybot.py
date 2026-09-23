@@ -13,23 +13,25 @@ from telegram.ext import (
 )
 
 
-# ==============================
-# KEYS
-# ==============================
+# =========================================================
+# ENVIRONMENT VARIABLES
+# =========================================================
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
+
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN is missing")
+
 
 if not GEMINI_API_KEY:
     raise ValueError("GEMINI_API_KEY is missing")
 
 
-# ==============================
+# =========================================================
 # GEMINI AI
-# ==============================
+# =========================================================
 
 def ask_ai(prompt):
 
@@ -44,12 +46,11 @@ def ask_ai(prompt):
                 "parts": [
                     {
                         "text": (
-                            "You are an AI Study Assistant. "
-                            "Answer clearly and helpfully. "
-                            "Explain difficult topics simply. "
-                            "You can help with mathematics, science, "
-                            "history, programming, technology and "
-                            "general knowledge.\n\n"
+                            "You are AI Study Bot, a helpful AI Study Assistant. "
+                            "Answer clearly and accurately. "
+                            "Explain difficult topics in simple language. "
+                            "You can help with mathematics, science, history, "
+                            "programming, technology and general knowledge.\n\n"
                             "User question:\n"
                             + prompt
                         )
@@ -84,37 +85,87 @@ def ask_ai(prompt):
             timeout=60
         ) as response:
 
-            result = json.loads(
-                response.read().decode("utf-8")
+            response_body = response.read().decode("utf-8")
+
+            result = json.loads(response_body)
+
+        candidates = result.get("candidates", [])
+
+        if not candidates:
+            return (
+                "❌ Gemini ne koi answer nahi diya.\n\n"
+                "Response:\n"
+                + response_body[:2500]
             )
 
-        return (
-            result["candidates"][0]
-            ["content"]["parts"][0]["text"]
-        )
+        content = candidates[0].get("content", {})
+        parts = content.get("parts", [])
+
+        if not parts:
+            return (
+                "❌ Gemini response me text nahi mila.\n\n"
+                "Response:\n"
+                + response_body[:2500]
+            )
+
+        answer = parts[0].get("text")
+
+        if not answer:
+            return "❌ Gemini ne empty response diya."
+
+        return answer
 
     except urllib.error.HTTPError as e:
 
-        error = e.read().decode("utf-8")
+        error_body = e.read().decode("utf-8")
 
         print("\n===== GEMINI API ERROR =====")
-        print(error)
+        print("HTTP STATUS:", e.code)
+        print("ERROR:", error_body)
         print("============================\n")
 
-        return "❌ Gemini API error. Logs check karo."
+        return (
+            "❌ Gemini API Error\n\n"
+            "HTTP Status: "
+            + str(e.code)
+            + "\n\n"
+            "Details:\n"
+            + error_body[:3000]
+        )
+
+    except urllib.error.URLError as e:
+
+        print("\n===== NETWORK ERROR =====")
+        print(str(e))
+        print("=========================\n")
+
+        return (
+            "❌ Gemini connection error.\n\n"
+            "Details:\n"
+            + str(e)
+        )
 
     except Exception as e:
 
-        print("\nERROR:", e)
+        print("\n===== GENERAL ERROR =====")
+        print(str(e))
+        print("========================\n")
 
-        return "❌ AI response lene me problem aa gayi."
+        return (
+            "❌ AI response lene me problem aa gayi.\n\n"
+            "Error:\n"
+            + str(e)[:2000]
+        )
 
 
-# ==============================
-# /START
-# ==============================
+# =========================================================
+# START
+# =========================================================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     await update.message.reply_text(
         "📚 AI Study Bot\n\n"
@@ -132,11 +183,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ==============================
-# /HELP
-# ==============================
+# =========================================================
+# HELP
+# =========================================================
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     await update.message.reply_text(
         "📚 Commands\n\n"
@@ -150,16 +204,22 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ==============================
-# /ASK
-# ==============================
+# =========================================================
+# ASK
+# =========================================================
 
-async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def ask_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not context.args:
+
         await update.message.reply_text(
-            "Example:\n/ask What is gravity?"
+            "Example:\n"
+            "/ask What is gravity?"
         )
+
         return
 
     question = " ".join(context.args)
@@ -170,19 +230,27 @@ async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     answer = ask_ai(question)
 
-    await update.message.reply_text(answer)
+    await update.message.reply_text(
+        answer
+    )
 
 
-# ==============================
-# /EXPLAIN
-# ==============================
+# =========================================================
+# EXPLAIN
+# =========================================================
 
-async def explain_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def explain_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not context.args:
+
         await update.message.reply_text(
-            "Example:\n/explain photosynthesis"
+            "Example:\n"
+            "/explain photosynthesis"
         )
+
         return
 
     topic = " ".join(context.args)
@@ -207,19 +275,27 @@ Use:
 
     answer = ask_ai(prompt)
 
-    await update.message.reply_text(answer)
+    await update.message.reply_text(
+        answer
+    )
 
 
-# ==============================
-# /QUIZ
-# ==============================
+# =========================================================
+# QUIZ
+# =========================================================
 
-async def quiz_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def quiz_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not context.args:
+
         await update.message.reply_text(
-            "Example:\n/quiz solar system"
+            "Example:\n"
+            "/quiz solar system"
         )
+
         return
 
     topic = " ".join(context.args)
@@ -248,19 +324,27 @@ Explanation:
 
     answer = ask_ai(prompt)
 
-    await update.message.reply_text(answer)
+    await update.message.reply_text(
+        answer
+    )
 
 
-# ==============================
-# /MCQ
-# ==============================
+# =========================================================
+# MCQ
+# =========================================================
 
-async def mcq_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def mcq_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not context.args:
+
         await update.message.reply_text(
-            "Example:\n/mcq class 10 mathematics"
+            "Example:\n"
+            "/mcq class 10 mathematics"
         )
+
         return
 
     topic = " ".join(context.args)
@@ -289,19 +373,27 @@ Explanation:
 
     answer = ask_ai(prompt)
 
-    await update.message.reply_text(answer)
+    await update.message.reply_text(
+        answer
+    )
 
 
-# ==============================
-# /SUMMARIZE
-# ==============================
+# =========================================================
+# SUMMARIZE
+# =========================================================
 
-async def summarize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def summarize_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not context.args:
+
         await update.message.reply_text(
-            "Example:\n/summarize Your text here"
+            "Example:\n"
+            "/summarize Your text here"
         )
+
         return
 
     text = " ".join(context.args)
@@ -324,19 +416,27 @@ Give:
 
     answer = ask_ai(prompt)
 
-    await update.message.reply_text(answer)
+    await update.message.reply_text(
+        answer
+    )
 
 
-# ==============================
-# /SOLVE
-# ==============================
+# =========================================================
+# SOLVE
+# =========================================================
 
-async def solve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def solve_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not context.args:
+
         await update.message.reply_text(
-            "Example:\n/solve 2x + 5 = 15"
+            "Example:\n"
+            "/solve 2x + 5 = 15"
         )
+
         return
 
     question = " ".join(context.args)
@@ -357,14 +457,19 @@ Give the final answer at the end.
 
     answer = ask_ai(prompt)
 
-    await update.message.reply_text(answer)
+    await update.message.reply_text(
+        answer
+    )
 
 
-# ==============================
+# =========================================================
 # NORMAL MESSAGE
-# ==============================
+# =========================================================
 
-async def normal_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def normal_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     text = update.message.text
 
@@ -374,12 +479,14 @@ async def normal_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     answer = ask_ai(text)
 
-    await update.message.reply_text(answer)
+    await update.message.reply_text(
+        answer
+    )
 
 
-# ==============================
+# =========================================================
 # MAIN
-# ==============================
+# =========================================================
 
 def main():
 
@@ -390,14 +497,67 @@ def main():
         .build()
     )
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("ask", ask_command))
-    app.add_handler(CommandHandler("explain", explain_command))
-    app.add_handler(CommandHandler("quiz", quiz_command))
-    app.add_handler(CommandHandler("mcq", mcq_command))
-    app.add_handler(CommandHandler("summarize", summarize_command))
-    app.add_handler(CommandHandler("solve", solve_command))
+
+    # Commands
+
+    app.add_handler(
+        CommandHandler(
+            "start",
+            start
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "help",
+            help_command
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "ask",
+            ask_command
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "explain",
+            explain_command
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "quiz",
+            quiz_command
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "mcq",
+            mcq_command
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "summarize",
+            summarize_command
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "solve",
+            solve_command
+        )
+    )
+
+
+    # Normal messages
 
     app.add_handler(
         MessageHandler(
@@ -406,21 +566,65 @@ def main():
         )
     )
 
-    port = int(os.environ.get("PORT", "10000"))
 
-    render_url = os.environ.get("RENDER_EXTERNAL_URL")
+    # Render port
+
+    port = int(
+        os.environ.get(
+            "PORT",
+            "10000"
+        )
+    )
+
+
+    # Render URL
+
+    render_url = os.environ.get(
+        "RENDER_EXTERNAL_URL"
+    )
 
     if not render_url:
-        raise ValueError("RENDER_EXTERNAL_URL is missing")
 
-    webhook_url = render_url + "/telegram"
+        raise ValueError(
+            "RENDER_EXTERNAL_URL is missing"
+        )
 
-    print("==============================")
-    print("🤖 AI Study Bot is starting!")
-    print("🟢 Gemini AI connected")
-    print("🌐 Render Webhook enabled")
-    print("🔗", webhook_url)
-    print("==============================")
+
+    # Telegram webhook URL
+
+    webhook_url = (
+        render_url
+        + "/telegram"
+    )
+
+
+    print(
+        "=============================="
+    )
+
+    print(
+        "🤖 AI Study Bot is starting!"
+    )
+
+    print(
+        "🟢 Gemini AI configured"
+    )
+
+    print(
+        "🌐 Render Webhook enabled"
+    )
+
+    print(
+        "🔗",
+        webhook_url
+    )
+
+    print(
+        "=============================="
+    )
+
+
+    # Start webhook
 
     app.run_webhook(
         listen="0.0.0.0",
@@ -430,6 +634,10 @@ def main():
         drop_pending_updates=True
     )
 
+
+# =========================================================
+# RUN
+# =========================================================
 
 if __name__ == "__main__":
     main()
