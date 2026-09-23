@@ -12,6 +12,7 @@ from telegram.ext import (
     filters
 )
 
+
 # ==============================
 # KEYS
 # ==============================
@@ -100,7 +101,7 @@ def ask_ai(prompt):
         print(error)
         print("============================\n")
 
-        return "❌ Gemini API error. Termux console check karo."
+        return "❌ Gemini API error. Logs check karo."
 
     except Exception as e:
 
@@ -113,10 +114,7 @@ def ask_ai(prompt):
 # /START
 # ==============================
 
-async def start(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "📚 AI Study Bot\n\n"
@@ -138,10 +136,7 @@ async def start(
 # /HELP
 # ==============================
 
-async def help_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "📚 Commands\n\n"
@@ -159,17 +154,12 @@ async def help_command(
 # /ASK
 # ==============================
 
-async def ask_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not context.args:
-
         await update.message.reply_text(
             "Example:\n/ask What is gravity?"
         )
-
         return
 
     question = " ".join(context.args)
@@ -187,17 +177,12 @@ async def ask_command(
 # /EXPLAIN
 # ==============================
 
-async def explain_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def explain_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not context.args:
-
         await update.message.reply_text(
             "Example:\n/explain photosynthesis"
         )
-
         return
 
     topic = " ".join(context.args)
@@ -229,17 +214,12 @@ Use:
 # /QUIZ
 # ==============================
 
-async def quiz_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def quiz_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not context.args:
-
         await update.message.reply_text(
             "Example:\n/quiz solar system"
         )
-
         return
 
     topic = " ".join(context.args)
@@ -275,17 +255,12 @@ Explanation:
 # /MCQ
 # ==============================
 
-async def mcq_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def mcq_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not context.args:
-
         await update.message.reply_text(
             "Example:\n/mcq class 10 mathematics"
         )
-
         return
 
     topic = " ".join(context.args)
@@ -321,17 +296,12 @@ Explanation:
 # /SUMMARIZE
 # ==============================
 
-async def summarize_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def summarize_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not context.args:
-
         await update.message.reply_text(
             "Example:\n/summarize Your text here"
         )
-
         return
 
     text = " ".join(context.args)
@@ -361,17 +331,12 @@ Give:
 # /SOLVE
 # ==============================
 
-async def solve_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def solve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not context.args:
-
         await update.message.reply_text(
             "Example:\n/solve 2x + 5 = 15"
         )
-
         return
 
     question = " ".join(context.args)
@@ -399,10 +364,7 @@ Give the final answer at the end.
 # NORMAL MESSAGE
 # ==============================
 
-async def normal_message(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def normal_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text
 
@@ -428,37 +390,14 @@ def main():
         .build()
     )
 
-    app.add_handler(
-        CommandHandler("start", start)
-    )
-
-    app.add_handler(
-        CommandHandler("help", help_command)
-    )
-
-    app.add_handler(
-        CommandHandler("ask", ask_command)
-    )
-
-    app.add_handler(
-        CommandHandler("explain", explain_command)
-    )
-
-    app.add_handler(
-        CommandHandler("quiz", quiz_command)
-    )
-
-    app.add_handler(
-        CommandHandler("mcq", mcq_command)
-    )
-
-    app.add_handler(
-        CommandHandler("summarize", summarize_command)
-    )
-
-    app.add_handler(
-        CommandHandler("solve", solve_command)
-    )
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("ask", ask_command))
+    app.add_handler(CommandHandler("explain", explain_command))
+    app.add_handler(CommandHandler("quiz", quiz_command))
+    app.add_handler(CommandHandler("mcq", mcq_command))
+    app.add_handler(CommandHandler("summarize", summarize_command))
+    app.add_handler(CommandHandler("solve", solve_command))
 
     app.add_handler(
         MessageHandler(
@@ -467,12 +406,29 @@ def main():
         )
     )
 
+    port = int(os.environ.get("PORT", "10000"))
+
+    render_url = os.environ.get("RENDER_EXTERNAL_URL")
+
+    if not render_url:
+        raise ValueError("RENDER_EXTERNAL_URL is missing")
+
+    webhook_url = render_url + "/telegram"
+
     print("==============================")
-    print("🤖 AI Study Bot is running!")
+    print("🤖 AI Study Bot is starting!")
     print("🟢 Gemini AI connected")
+    print("🌐 Render Webhook enabled")
+    print("🔗", webhook_url)
     print("==============================")
 
-    app.run_polling()
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=port,
+        url_path="telegram",
+        webhook_url=webhook_url,
+        drop_pending_updates=True
+    )
 
 
 if __name__ == "__main__":
