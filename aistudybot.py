@@ -2,6 +2,7 @@ import os
 import json
 import base64
 import time
+import random
 import urllib.request
 import urllib.error
 
@@ -11,7 +12,7 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     ContextTypes,
-    filters
+    filters,
 )
 
 
@@ -22,10 +23,8 @@ from telegram.ext import (
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN is missing")
-
 
 if not GEMINI_API_KEY:
     raise ValueError("GEMINI_API_KEY is missing")
@@ -35,18 +34,19 @@ if not GEMINI_API_KEY:
 # SETTINGS
 # ============================================================
 
-# Primary model
-PRIMARY_MODEL = "gemini-3.8-flash"
-
-# Fallback model
-FALLBACK_MODEL = "gemini-3.5-flash"
-
-# Retry count for temporary errors such as 503
-MAX_RETRIES = 3
-
-# Telegram message limit is 4096.
-# We keep some space below it.
 TELEGRAM_LIMIT = 3900
+
+# Maximum number of attempts for a single model
+MAX_RETRIES = 4
+
+# How long the HTTP request can wait
+REQUEST_TIMEOUT = 90
+
+# Cache discovered models for this many seconds
+MODEL_CACHE_SECONDS = 600
+
+_cached_models = []
+_model_cache_time = 0
 
 
 # ============================================================
@@ -58,36 +58,35 @@ You are AI Study Bot, a friendly and highly useful AI study assistant.
 
 Your creator is Furkan.
 
-If the user asks:
-- who created you
-- who made you
-- who is your creator
-- who developed you
-- who built this bot
-- who is the owner
-- who is behind this bot
-- who are you made by
-- who programmed you
-- or anything similar
+IMPORTANT CREATOR RULE:
 
-always answer:
+If the user asks who created, made, built, developed, programmed,
+owns, or is behind this bot, answer exactly:
 
 "I was created by Furkan."
 
-Do not claim that Google created this Telegram bot.
+Do not say that Google created this Telegram bot.
 Gemini is only the AI technology powering the bot.
+
+LANGUAGE RULE:
+
+Always communicate with the user in English.
+
+Do not use Hindi, Hinglish, or Hindi transliteration in your replies,
+including error messages, explanations, examples, commands, and study
+content.
 
 GENERAL RESPONSE STYLE:
 
 Give clear, organized and easy-to-read answers.
 
 Use:
-• headings
-• numbered steps
-• bullet points
-• short paragraphs
-• examples when useful
-• equations clearly when needed
+- headings
+- numbered steps
+- bullet points
+- short paragraphs
+- examples when useful
+- equations clearly when needed
 
 Do not make every answer unnecessarily long.
 
@@ -114,10 +113,9 @@ Use Markdown formatting where useful.
 # ============================================================
 
 def is_creator_question(text):
-
     text = text.lower().strip()
 
-    creator_words = [
+    creator_phrases = [
         "who created you",
         "who made you",
         "who is your creator",
@@ -134,17 +132,20 @@ def is_creator_question(text):
         "who is behind this bot",
         "who are you made by",
         "who made u",
-        "who created u"
+        "who created u",
+        "who made this",
+        "who created this",
+        "who built this",
     ]
 
     return any(
         phrase in text
-        for phrase in creator_words
+        for phrase in creator_phrases
     )
 
 
 # ============================================================
-# SPLIT LONG TELEGRAM MESSAGES
+# TELEGRAM MESSAGE SPLITTER
 # ============================================================
 
 def split_message(text):
@@ -165,9 +166,7 @@ def split_message(text):
         if cut < 1000:
             cut = TELEGRAM_LIMIT
 
-        chunks.append(
-            text[:cut]
-        )
+        chunks.append(text[:cut])
 
         text = text[cut:].lstrip()
 
@@ -183,42 +182,256 @@ async def send_long_message(
     parse_mode="Markdown"
 ):
 
-    chunks = split_message(text)
-
-    for chunk in chunks:
+    for chunk in split_message(text):
 
         try:
-
             await update.message.reply_text(
                 chunk,
                 parse_mode=parse_mode
             )
 
         except Exception:
-
-            # If Markdown causes a formatting problem,
-            # send the same text without Markdown.
-
-            await update.message.reply_text(
-                chunk
-            )
+            await update.message.reply_text(chunk)
 
 
 # ============================================================
-# GEMINI REQUEST
+# GEMINI: DISCOVER AVAILABLE MODELS
+# ============================================================
+
+def get_available_models(force_refresh=False):
+
+    global _cached_models
+    global _model_cache_time
+
+    now = time.time()
+
+    if (
+        not force_refresh
+        and _cached_models
+        and now - _model_cache_time < MODEL_CACHE_SECONDS
+    ):
+        return _cached_models
+
+    url = (
+        "https://generativelanguage.googleapis.com/"
+        "v1beta/models"
+    )
+
+    request = urllib.request.Request(
+        url,
+        method="GET"
+    )
+
+    request.add_header(
+        "x-goog-api-key",
+        GEMINI_API_KEY
+    )
+
+    try:
+
+        with urllib.request.urlopen(
+            request,
+            timeout=30
+        ) as response:
+
+            body = response.read().decode(
+                "utf-8"
+            )
+
+        data = json.loads(body)
+
+        models = data.get(
+            "models",
+            []
+        )
+
+        usable_models = []
+
+        for model in models:
+
+            name = model.get(
+                "name",
+                ""
+            )
+
+            methods = model.get(
+                "supportedGenerationMethods",
+                []
+            )
+
+            if (
+                name
+                and "generateContent" in methods
+            ):
+
+                usable_models.append(
+                    model
+                )
+
+        _cached_models = usable_models
+        _model_cache_time = now
+
+        print(
+            "Gemini models discovered:",
+            len(usable_models)
+        )
+
+        for model in usable_models:
+            print(
+                " -",
+                model.get("name")
+            )
+
+        return usable_models
+
+    except urllib.error.HTTPError as e:
+
+        error_body = e.read().decode(
+            "utf-8",
+            errors="replace"
+        )
+
+        print(
+            "MODEL LIST ERROR:",
+            e.code,
+            error_body
+        )
+
+        return []
+
+    except Exception as e:
+
+        print(
+            "MODEL LIST ERROR:",
+            str(e)
+        )
+
+        return []
+
+
+# ============================================================
+# CHOOSE BEST AVAILABLE MODELS
+# ============================================================
+
+def choose_models():
+
+    models = get_available_models()
+
+    if not models:
+        return []
+
+    candidates = []
+
+    for model in models:
+
+        full_name = model.get(
+            "name",
+            ""
+        )
+
+        name = full_name.lower()
+
+        # Ignore non-chat/generation models
+        blocked_words = [
+            "embedding",
+            "aqa",
+            "tts",
+            "image-generation",
+            "imagen",
+            "veo",
+        ]
+
+        if any(
+            word in name
+            for word in blocked_words
+        ):
+            continue
+
+        # Prefer Flash models because this is a study bot
+        if "flash" in name:
+            candidates.append(
+                model
+            )
+
+    # If no Flash model was found, use any usable
+    # generateContent model.
+    if not candidates:
+        candidates = models
+
+    # Prefer stable-looking models over experimental ones.
+    def model_score(model):
+
+        name = model.get(
+            "name",
+            ""
+        ).lower()
+
+        score = 0
+
+        if "flash" in name:
+            score += 100
+
+        if "lite" in name:
+            score += 20
+
+        if "preview" in name:
+            score -= 10
+
+        if "experimental" in name:
+            score -= 20
+
+        if "latest" in name:
+            score += 5
+
+        return score
+
+    candidates.sort(
+        key=model_score,
+        reverse=True
+    )
+
+    # Remove duplicates
+    selected = []
+    seen = set()
+
+    for model in candidates:
+
+        name = model.get(
+            "name",
+            ""
+        )
+
+        if name not in seen:
+
+            seen.add(name)
+            selected.append(name)
+
+    # Try several available models.
+    return selected[:5]
+
+
+# ============================================================
+# GEMINI GENERATE CONTENT
 # ============================================================
 
 def gemini_request(
     prompt,
+    model,
     image_bytes=None,
-    image_mime_type=None,
-    model=PRIMARY_MODEL
+    image_mime_type=None
 ):
+
+    # API model names are normally returned as:
+    # models/example-model
+    model_name = model
+
+    if model_name.startswith("models/"):
+        model_name = model_name[len("models/"):]
 
     url = (
         "https://generativelanguage.googleapis.com/"
         "v1beta/models/"
-        + model
+        + model_name
         + ":generateContent"
     )
 
@@ -228,16 +441,14 @@ def gemini_request(
         + prompt
     )
 
-    parts = []
-
-    parts.append(
+    parts = [
         {
             "text": full_prompt
         }
-    )
+    ]
 
     # --------------------------------------------------------
-    # IMAGE INPUT
+    # IMAGE
     # --------------------------------------------------------
 
     if image_bytes is not None:
@@ -285,16 +496,16 @@ def gemini_request(
 
     with urllib.request.urlopen(
         request,
-        timeout=90
+        timeout=REQUEST_TIMEOUT
     ) as response:
 
         response_body = response.read().decode(
             "utf-8"
         )
 
-        result = json.loads(
-            response_body
-        )
+    result = json.loads(
+        response_body
+    )
 
     candidates = result.get(
         "candidates",
@@ -304,8 +515,7 @@ def gemini_request(
     if not candidates:
 
         return (
-            "❌ Gemini ne koi answer nahi diya.\n\n"
-            + response_body[:2000]
+            "The AI returned no answer."
         )
 
     content = candidates[0].get(
@@ -323,18 +533,22 @@ def gemini_request(
     for part in response_parts:
 
         if "text" in part:
+
             texts.append(
                 part["text"]
             )
 
     if not texts:
-        return "❌ Gemini ne empty response diya."
+
+        return (
+            "The AI returned an empty response."
+        )
 
     return "\n".join(texts)
 
 
 # ============================================================
-# AI FUNCTION WITH RETRY + FALLBACK
+# AI FUNCTION
 # ============================================================
 
 def ask_ai(
@@ -343,14 +557,34 @@ def ask_ai(
     image_mime_type=None
 ):
 
-    models_to_try = [
-        PRIMARY_MODEL,
-        FALLBACK_MODEL
-    ]
+    models = choose_models()
 
-    last_error = None
+    if not models:
 
-    for model in models_to_try:
+        return (
+            "❌ Gemini could not provide any usable "
+            "generateContent models for this API key.\n\n"
+            "Please check the Gemini API configuration."
+        )
+
+    print(
+        "Models selected for request:"
+    )
+
+    for model in models:
+        print(
+            " -",
+            model
+        )
+
+    last_error_status = None
+    last_error_body = ""
+
+    # --------------------------------------------------------
+    # Try each available model
+    # --------------------------------------------------------
+
+    for model in models:
 
         for attempt in range(
             MAX_RETRIES
@@ -359,7 +593,7 @@ def ask_ai(
             try:
 
                 print(
-                    "Gemini request:",
+                    "\nGemini request:",
                     model,
                     "attempt:",
                     attempt + 1
@@ -367,13 +601,13 @@ def ask_ai(
 
                 answer = gemini_request(
                     prompt=prompt,
+                    model=model,
                     image_bytes=image_bytes,
-                    image_mime_type=image_mime_type,
-                    model=model
+                    image_mime_type=image_mime_type
                 )
 
                 print(
-                    "Gemini response received from:",
+                    "Gemini response received:",
                     model
                 )
 
@@ -385,6 +619,9 @@ def ask_ai(
                     "utf-8",
                     errors="replace"
                 )
+
+                last_error_status = e.code
+                last_error_body = error_body
 
                 print(
                     "\n===== GEMINI API ERROR ====="
@@ -409,51 +646,77 @@ def ask_ai(
                     "============================\n"
                 )
 
-                last_error = (
-                    e.code,
-                    error_body
-                )
-
                 # ------------------------------------------------
-                # 503 = temporary model overload
+                # Temporary errors
                 # ------------------------------------------------
 
-                if e.code == 503:
+                if e.code in (
+                    408,
+                    429,
+                    500,
+                    502,
+                    503,
+                    504
+                ):
 
                     if attempt < MAX_RETRIES - 1:
 
+                        # 3, 6, 12, 24 seconds
+                        # + small random jitter
+                        delay = (
+                            3 * (2 ** attempt)
+                            + random.uniform(0, 1.5)
+                        )
+
+                        print(
+                            "Temporary error.",
+                            "Retrying in",
+                            round(delay, 1),
+                            "seconds..."
+                        )
+
                         time.sleep(
-                            2 ** attempt
+                            delay
                         )
 
                         continue
 
-                    # Try fallback model
+                    print(
+                        "Retries exhausted for:",
+                        model
+                    )
+
+                    # Try the next available model
                     break
 
                 # ------------------------------------------------
-                # 429 = rate limit
+                # Model not found
                 # ------------------------------------------------
 
-                if e.code == 429:
+                if e.code == 404:
 
-                    if attempt < MAX_RETRIES - 1:
+                    print(
+                        "Model unavailable:",
+                        model
+                    )
 
-                        time.sleep(
-                            3
-                        )
-
-                        continue
+                    # Refresh model list
+                    get_available_models(
+                        force_refresh=True
+                    )
 
                     break
 
                 # ------------------------------------------------
-                # Other HTTP errors
+                # Authentication / permission / bad request
                 # ------------------------------------------------
 
                 break
 
             except urllib.error.URLError as e:
+
+                last_error_status = "NETWORK"
+                last_error_body = str(e)
 
                 print(
                     "\n===== NETWORK ERROR ====="
@@ -467,15 +730,15 @@ def ask_ai(
                     "=========================\n"
                 )
 
-                last_error = (
-                    "NETWORK",
-                    str(e)
-                )
-
                 if attempt < MAX_RETRIES - 1:
 
+                    delay = (
+                        2 ** attempt
+                        + random.uniform(0, 1)
+                    )
+
                     time.sleep(
-                        2
+                        delay
                     )
 
                     continue
@@ -483,6 +746,9 @@ def ask_ai(
                 break
 
             except Exception as e:
+
+                last_error_status = "GENERAL"
+                last_error_body = str(e)
 
                 print(
                     "\n===== GENERAL ERROR ====="
@@ -496,37 +762,63 @@ def ask_ai(
                     "========================\n"
                 )
 
-                last_error = (
-                    "GENERAL",
-                    str(e)
-                )
-
                 break
 
     # ========================================================
-    # FINAL ERROR
+    # FRIENDLY ERROR
     # ========================================================
 
-    if last_error:
-
-        status = last_error[0]
-        details = last_error[1]
+    if last_error_status == 401:
 
         return (
-            "❌ Gemini temporarily unavailable.\n\n"
-            "Status: "
-            + str(status)
-            + "\n\n"
-            "Please try again in a little while."
+            "❌ Gemini API authentication failed.\n\n"
+            "Please check the GEMINI_API_KEY in Render."
+        )
+
+    if last_error_status == 403:
+
+        return (
+            "❌ Gemini API access was denied.\n\n"
+            "Please check the API key permissions "
+            "and project configuration."
+        )
+
+    if last_error_status == 429:
+
+        return (
+            "❌ Gemini rate limit reached.\n\n"
+            "Please wait a little and try again."
+        )
+
+    if last_error_status in (
+        408,
+        500,
+        502,
+        503,
+        504
+    ):
+
+        return (
+            "❌ Gemini is temporarily unavailable.\n\n"
+            "The request was retried automatically, "
+            "but the available models did not respond.\n\n"
+            "Please try again shortly."
+        )
+
+    if last_error_status == "NETWORK":
+
+        return (
+            "❌ Network error while contacting Gemini.\n\n"
+            "Please try again."
         )
 
     return (
-        "❌ AI response lene me problem aa gayi."
+        "❌ I could not get an AI response right now."
     )
 
 
 # ============================================================
-# START
+# /START
 # ============================================================
 
 async def start(
@@ -537,34 +829,36 @@ async def start(
     await update.message.reply_text(
         "📚 *AI Study Bot*\n\n"
         "Hello! 👋\n\n"
-        "Main tumhari studies me help kar sakta hoon.\n\n"
+        "I can help you with studying, "
+        "questions, quizzes, exams, mathematics, "
+        "science, and images.\n\n"
 
         "🧠 *AI*\n"
-        "/ask <question>\n\n"
+        "`/ask <question>`\n\n"
 
         "📖 *Study*\n"
-        "/explain <topic>\n"
-        "/quiz <topic>\n"
-        "/mcq <topic>\n"
-        "/summarize <text>\n"
-        "/solve <question>\n\n"
+        "`/explain <topic>`\n"
+        "`/quiz <topic>`\n"
+        "`/mcq <topic>`\n"
+        "`/summarize <text>`\n"
+        "`/solve <question>`\n\n"
 
         "📝 *Exam Paper*\n"
-        "/exam <chapters/topics>\n\n"
+        "`/exam <chapters/topics>`\n\n"
 
         "🖼️ *Image Questions*\n"
-        "Mujhe koi image/photo bhejo aur uske saath question likho.\n\n"
+        "Send me a photo with a question or instruction.\n\n"
 
         "Example:\n"
         "`/exam Motion, Force and Gravitation`\n\n"
 
-        "Ya simply normal message bhejo.",
+        "You can also simply send me a normal message.",
         parse_mode="Markdown"
     )
 
 
 # ============================================================
-# HELP
+# /HELP
 # ============================================================
 
 async def help_command(
@@ -575,7 +869,7 @@ async def help_command(
     await update.message.reply_text(
         "📚 *AI Study Bot Commands*\n\n"
 
-        "🤖 `/ask` — Any question\n"
+        "🤖 `/ask` — Ask any question\n"
         "📖 `/explain` — Explain a topic\n"
         "🧠 `/quiz` — Create a quiz\n"
         "📝 `/mcq` — Create MCQs\n"
@@ -583,18 +877,17 @@ async def help_command(
         "🧮 `/solve` — Solve a question\n"
         "📋 `/exam` — Create an exam paper\n\n"
 
-        "🖼️ *Images:*\n"
-        "Photo bhejo + question likho.\n"
-        "Example: 'Solve this question.'\n\n"
+        "🖼️ *Images*\n"
+        "Send a photo with your question.\n\n"
 
-        "👤 Creator:\n"
+        "👤 *Creator*\n"
         "Ask me who created me.",
         parse_mode="Markdown"
     )
 
 
 # ============================================================
-# ASK
+# /ASK
 # ============================================================
 
 async def ask_command(
@@ -606,7 +899,8 @@ async def ask_command(
 
         await update.message.reply_text(
             "Example:\n"
-            "/ask What is gravity?"
+            "`/ask What is gravity?`",
+            parse_mode="Markdown"
         )
 
         return
@@ -638,7 +932,7 @@ async def ask_command(
 
 
 # ============================================================
-# EXPLAIN
+# /EXPLAIN
 # ============================================================
 
 async def explain_command(
@@ -650,7 +944,8 @@ async def explain_command(
 
         await update.message.reply_text(
             "Example:\n"
-            "/explain photosynthesis"
+            "`/explain photosynthesis`",
+            parse_mode="Markdown"
         )
 
         return
@@ -664,7 +959,7 @@ Explain this topic to a student:
 
 {topic}
 
-Use this format:
+Use this structure:
 
 📖 Definition
 
@@ -680,7 +975,7 @@ Keep the explanation clear and easy to understand.
 """
 
     await update.message.reply_text(
-        "📖 Preparing explanation..."
+        "📖 Preparing the explanation..."
     )
 
     answer = ask_ai(
@@ -694,7 +989,7 @@ Keep the explanation clear and easy to understand.
 
 
 # ============================================================
-# QUIZ
+# /QUIZ
 # ============================================================
 
 async def quiz_command(
@@ -706,7 +1001,8 @@ async def quiz_command(
 
         await update.message.reply_text(
             "Example:\n"
-            "/quiz solar system"
+            "`/quiz solar system`",
+            parse_mode="Markdown"
         )
 
         return
@@ -736,7 +1032,7 @@ Make the questions appropriate for a student.
 """
 
     await update.message.reply_text(
-        "🧠 Creating quiz..."
+        "🧠 Creating your quiz..."
     )
 
     answer = ask_ai(
@@ -750,7 +1046,7 @@ Make the questions appropriate for a student.
 
 
 # ============================================================
-# MCQ
+# /MCQ
 # ============================================================
 
 async def mcq_command(
@@ -762,7 +1058,8 @@ async def mcq_command(
 
         await update.message.reply_text(
             "Example:\n"
-            "/mcq class 10 mathematics"
+            "`/mcq Class 10 Mathematics`",
+            parse_mode="Markdown"
         )
 
         return
@@ -804,7 +1101,7 @@ Make the questions educational and clear.
 
 
 # ============================================================
-# SUMMARIZE
+# /SUMMARIZE
 # ============================================================
 
 async def summarize_command(
@@ -816,7 +1113,8 @@ async def summarize_command(
 
         await update.message.reply_text(
             "Example:\n"
-            "/summarize Your text here"
+            "`/summarize Your text here`",
+            parse_mode="Markdown"
         )
 
         return
@@ -856,7 +1154,7 @@ Keep it concise but useful.
 
 
 # ============================================================
-# SOLVE
+# /SOLVE
 # ============================================================
 
 async def solve_command(
@@ -868,7 +1166,8 @@ async def solve_command(
 
         await update.message.reply_text(
             "Example:\n"
-            "/solve 2x + 5 = 15"
+            "`/solve 2x + 5 = 15`",
+            parse_mode="Markdown"
         )
 
         return
@@ -910,7 +1209,7 @@ Explain every important step clearly.
 
 
 # ============================================================
-# EXAM PAPER
+# /EXAM
 # ============================================================
 
 async def exam_command(
@@ -924,11 +1223,7 @@ async def exam_command(
             "📋 *Exam Paper Generator*\n\n"
             "Example:\n"
             "`/exam Motion, Force and Gravitation`\n\n"
-            "You can give:\n"
-            "• One chapter\n"
-            "• Multiple chapters\n"
-            "• A topic\n"
-            "• Multiple topics",
+            "You can provide one or multiple chapters/topics.",
             parse_mode="Markdown"
         )
 
@@ -992,15 +1287,15 @@ SECTION D — LONG ANSWERS
 TOTAL = 50 MARKS
 ━━━━━━━━━━━━━━━━━━━━
 
-Important requirements:
+Requirements:
 
-• Cover the provided chapters/topics fairly.
-• Mix easy, medium and challenging questions.
-• Avoid duplicate questions.
-• Make questions suitable for students.
-• Include numerical/problem-solving questions when appropriate.
-• Do not include answers in the question paper.
-• Keep formatting clean and readable.
+- Cover the provided chapters/topics fairly.
+- Mix easy, medium, and challenging questions.
+- Avoid duplicate questions.
+- Make questions suitable for students.
+- Include numerical/problem-solving questions when appropriate.
+- Do not include answers in the question paper.
+- Keep formatting clean and readable.
 """
 
     await update.message.reply_text(
@@ -1032,7 +1327,7 @@ async def image_message(
     if not photo:
 
         await update.message.reply_text(
-            "❌ Image receive nahi hui."
+            "❌ No image was received."
         )
 
         return
@@ -1071,6 +1366,7 @@ async def image_message(
 
         image_bytes = await telegram_file.download_as_bytearray()
 
+        # Telegram photo uploads are normally JPEG.
         mime_type = "image/jpeg"
 
         answer = ask_ai(
@@ -1092,7 +1388,7 @@ async def image_message(
         )
 
         await update.message.reply_text(
-            "❌ Image process karne me problem aa gayi."
+            "❌ There was a problem processing the image."
         )
 
 
@@ -1110,7 +1406,6 @@ async def normal_message(
     if not text:
         return
 
-    # Creator question
     if is_creator_question(text):
 
         await update.message.reply_text(
@@ -1147,7 +1442,6 @@ def main():
         )
         .build()
     )
-
 
     # --------------------------------------------------------
     # COMMANDS
@@ -1216,7 +1510,6 @@ def main():
         )
     )
 
-
     # --------------------------------------------------------
     # IMAGE HANDLER
     # --------------------------------------------------------
@@ -1227,7 +1520,6 @@ def main():
             image_message
         )
     )
-
 
     # --------------------------------------------------------
     # NORMAL TEXT
@@ -1240,7 +1532,6 @@ def main():
         )
     )
 
-
     # --------------------------------------------------------
     # RENDER PORT
     # --------------------------------------------------------
@@ -1251,7 +1542,6 @@ def main():
             "10000"
         )
     )
-
 
     # --------------------------------------------------------
     # RENDER URL
@@ -1267,12 +1557,14 @@ def main():
             "RENDER_EXTERNAL_URL is missing"
         )
 
-
     webhook_url = (
         render_url
         + "/telegram"
     )
 
+    # --------------------------------------------------------
+    # STARTUP LOG
+    # --------------------------------------------------------
 
     print(
         "======================================"
@@ -1299,6 +1591,10 @@ def main():
     )
 
     print(
+        "🔄 Automatic model discovery enabled"
+    )
+
+    print(
         "🔄 Retry + fallback enabled"
     )
 
@@ -1315,7 +1611,6 @@ def main():
         "======================================"
     )
 
-
     # --------------------------------------------------------
     # START WEBHOOK
     # --------------------------------------------------------
@@ -1330,7 +1625,7 @@ def main():
 
 
 # ============================================================
-# START PROGRAM
+# PROGRAM START
 # ============================================================
 
 if __name__ == "__main__":
