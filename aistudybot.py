@@ -33,7 +33,7 @@ from telegram.ext import (
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-ADMIN_USER_ID = os.getenv("ADMIN_USER_ID", "").strip()
+ADMIN_USER_ID = re.sub(r"\D", "", os.getenv("ADMIN_USER_ID", "7362097945").strip())
 
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN is missing")
@@ -65,8 +65,19 @@ Gemini is only the AI technology powering the bot.
 LANGUAGE:
 Always communicate in English. Never use Hindi or Hinglish.
 
+OUTPUT FORMAT — VERY IMPORTANT:
+Return PLAIN TEXT suitable for Telegram. Do NOT use LaTeX or TeX syntax.
+Never put mathematics inside $...$, $$...$$, \(...\), or \[...\].
+Never output commands such as \frac, \times, \Rightarrow, \sqrt, \cdot, or other LaTeX commands.
+Never use raw HTML tags. Do not use Markdown tables.
+For fractions write them like 3/5 or use a simple stacked explanation such as:
+  numerator / denominator
+For powers use normal Unicode when practical: x², x³, xⁿ.
+For multiplication use ×, division use ÷, and arrows use →.
+Keep equations on separate lines.
+
 CLEAN ANSWER STYLE:
-Make every response easy to scan on a phone.
+Make every response easy to scan on a phone and visually clean.
 
 Use:
 • Short headings
@@ -76,6 +87,7 @@ Use:
 • Clear spacing
 • Equations on separate lines
 • Examples when useful
+• A clearly labeled final answer
 
 Avoid:
 • Huge walls of text
@@ -84,10 +96,11 @@ Avoid:
 • Decorative lines made from many repeated characters
 • Tables unless they genuinely improve clarity
 • Markdown code fences unless code is requested
+• Dollar signs used as math delimiters
 
 For mathematics:
 1. State the formula when useful.
-2. Show the working.
+2. Show the working clearly, one step per line.
 3. Give a clearly labeled final answer.
 
 For science:
@@ -135,38 +148,28 @@ def track_user(update, kind="message"):
         "SELECT user_id FROM users WHERE user_id = ?", (user.id,)
     ).fetchone()
 
+    message_increment = 0 if kind == "start" else 1
     if row is None:
         conn.execute("""
             INSERT INTO users
             (user_id, first_name, username, first_seen, last_seen, messages)
             VALUES (?, ?, ?, ?, ?, ?)
-        """, (user.id, first_name, username, now, now, 1 if kind != "start" else 0))
+        """, (user.id, first_name, username, now, now, message_increment))
     else:
         conn.execute("""
             UPDATE users
             SET first_name = ?, username = ?, last_seen = ?,
                 messages = messages + ?
             WHERE user_id = ?
-        """, (
-            first_name, username, now,
-            0 if kind == "start" else 1,
-            user.id
-        ))
+        """, (first_name, username, now, message_increment, user.id))
 
-    if kind in {
-        "ai", "image", "quiz", "mcq", "exam",
-        "explain", "solve", "summary"
-    }:
-        column = {
-            "ai": "ai_requests",
-            "image": "images",
-            "quiz": "quizzes",
-            "mcq": "mcqs",
-            "exam": "exams",
-            "explain": "explains",
-            "solve": "solves",
-            "summary": "summaries",
-        }[kind]
+    event_columns = {
+        "ai": "ai_requests", "image": "images", "quiz": "quizzes",
+        "mcq": "mcqs", "exam": "exams", "explain": "explains",
+        "solve": "solves", "summary": "summaries"
+    }
+    column = event_columns.get(kind)
+    if column:
         conn.execute(
             f"UPDATE users SET {column} = {column} + 1 WHERE user_id = ?",
             (user.id,)
@@ -232,16 +235,106 @@ def is_creator_question(text):
     ]
     return any(phrase in text for phrase in creator_phrases)
 
+def _replace_braced_command(text, command, replacement):
+    """Replace simple LaTeX commands with one braced argument."""
+    pattern = re.compile(r"\\" + re.escape(command) + r"\{([^{}]*)\}")
+    while pattern.search(text):
+        text = pattern.sub(lambda m: replacement(m.group(1)), text)
+    return text
+
 def clean_ai_text(text):
+    """Turn Gemini's output into clean Telegram-friendly text.
+
+    Telegram HTML does not render LaTeX, so math delimiters and common
+    LaTeX commands are converted to readable plain text before escaping.
+    """
     if not text:
         return "I could not generate an answer."
-    text = escape(str(text))
-    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
-    text = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"<i>\1</i>", text)
-    text = re.sub(r"`([^`\n]+)`", r"<code>\1</code>", text)
-    text = re.sub(r"(?m)^#{1,6}\s+(.+)$", r"<b>\1</b>", text)
+
+    text = str(text).replace("\r\n", "\n").replace("\r", "\n")
+
+    # Remove fenced Markdown wrappers while keeping their contents.
+    text = re.sub(r"```(?:[A-Za-z0-9_+-]+)?\n?", "", text)
+    text = text.replace("```", "")
+
+    # Convert common LaTeX commands before removing math delimiters.
+    # Handle the common \frac{a}{b} form first.
+    text = re.sub(r"\\frac\{([^{}]*)\}\{([^{}]*)\}", r"\1/\2", text)
+    text = _replace_braced_command(text, "frac", lambda x: x + "/")
+    text = _replace_braced_command(text, "sqrt", lambda x: "√(" + x + ")")
+    text = _replace_braced_command(text, "text", lambda x: x)
+    text = _replace_braced_command(text, "mathrm", lambda x: x)
+    text = _replace_braced_command(text, "mathbf", lambda x: x)
+    text = _replace_braced_command(text, "operatorname", lambda x: x)
+
+    replacements = {
+        r"\\times": "×",
+        r"\\cdot": "·",
+        r"\\div": "÷",
+        r"\\Rightarrow": "→",
+        r"\\rightarrow": "→",
+        r"\\Leftarrow": "←",
+        r"\\leftarrow": "←",
+        r"\\leq": "≤",
+        r"\\le": "≤",
+        r"\\geq": "≥",
+        r"\\ge": "≥",
+        r"\\neq": "≠",
+        r"\\pm": "±",
+        r"\\approx": "≈",
+        r"\\infty": "∞",
+        r"\\pi": "π",
+        r"\\sum": "Σ",
+        r"\\theta": "θ",
+        r"\\alpha": "α",
+        r"\\beta": "β",
+        r"\\gamma": "γ",
+        r"\\Delta": "Δ",
+        r"\\degree": "°",
+        r"\\quad": " ",
+        r"\\,": " ",
+    }
+    for pattern, replacement in replacements.items():
+        text = re.sub(pattern, replacement, text)
+
+    # Remove math delimiters. These are the source of the visible $...$ mess.
+    text = re.sub(r"\$\$(.*?)\$\$", r"\1", text, flags=re.S)
+    text = re.sub(r"\$(.*?)\$", r"\1", text, flags=re.S)
+    text = re.sub(r"\\\((.*?)\\\)", r"\1", text, flags=re.S)
+    text = re.sub(r"\\\[(.*?)\\\]", r"\1", text, flags=re.S)
+
+    # Remove remaining LaTeX grouping braces and common commands.
+    text = text.replace("{", "").replace("}", "")
+    text = re.sub(r"\\([A-Za-z]+)", r"\1", text)
+
+    # Convert simple superscripts/subscripts such as x^{2}, x^2, a_{n}.
+    supers = str.maketrans("0123456789+-=()", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾")
+    def sup(m):
+        value = m.group(1)
+        return "".join(ch.translate(supers) for ch in value)
+    text = re.sub(r"\^([A-Za-z0-9()+\-=]+)", sup, text)
+    text = re.sub(r"_\{([^{}]+)\}", r"_\1", text)
+
+    # Strip Markdown emphasis markers. Telegram HTML below will provide the
+    # actual clean bold/italic formatting for headings and emphasis.
+    text = re.sub(r"\*\*(.*?)\*\*", r"\1", text, flags=re.S)
+    text = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"\1", text)
+    text = re.sub(r"^#{1,6}\s*", "", text, flags=re.M)
+
+    # Clean repeated whitespace without destroying intentional line breaks.
+    text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
+    text = text.strip()
+
+    # Escape after all transformations so Telegram HTML remains safe.
+    text = escape(text)
+
+    # Add consistent visual hierarchy to common study labels.
+    text = re.sub(r"(?im)^(correct answer|final answer|answer|solution|explanation)(\s*:?)(.*)$",
+                  lambda m: "<b>" + m.group(1).title() + "</b>" + m.group(2) + m.group(3), text)
+    text = re.sub(r"(?im)^(question\s+\d+)(\s*:?)$",
+                  lambda m: "<b>" + m.group(1).title() + "</b>" + m.group(2), text)
+    return text
 
 def split_message(text):
     if len(text) <= TELEGRAM_LIMIT:
@@ -520,10 +613,10 @@ async def help_command(update, context):
     )
 
 async def stats_command(update, context):
-    track_user(update)
     if not is_admin(update):
         await update.message.reply_text("❌ This command is available to the bot administrator only.")
         return
+    track_user(update)
     s = get_stats()
     await update.message.reply_text(
         "<b>📊 AI Study Bot — Dashboard</b>\n\n"
